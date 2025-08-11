@@ -1,8 +1,114 @@
 import * as mqtt from 'mqtt';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
 
 // Configurar dotenv para variables de entorno
 dotenv.config();
+
+// Configuración para el análisis de latencia
+const TOTAL_MESSAGES = 100;
+const WARMUP_MESSAGES = 5;
+const INTERVAL_MS = 3000;
+let messageCount = 0;
+
+// Estructura para almacenar resultados
+const latencyResults = [];
+
+// Función para guardar resultados en CSV
+function saveToCSV(results, implementation) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `latency_results_${implementation}_${timestamp}.csv`;
+    
+    // Crear encabezados del CSV
+    const headers = [
+        'messageId',
+        'T1',
+        'T2',
+        'T2_5',
+        'T3',
+        'T4',
+        'RTT_Total',
+        'MQTT_to_WebSocket',
+        'WebSocket_Processing',
+        'Django_Processing',
+        'Django_to_Frontend',
+        'Frontend_to_MQTT'
+    ].join(',');
+
+    // Crear contenido del CSV
+    const csvContent = results.map(result => [
+        result.messageId,
+        result.timestamps.T1,
+        result.timestamps.T2,
+        result.timestamps.T2_5 || '',
+        result.timestamps.T3,
+        result.timestamps.T4,
+        result.latencies.totalRTT,
+        result.latencies.mqttToWebSocket,
+        result.latencies.webSocketProcessing,
+        result.latencies.djangoProcessing || '',
+        result.latencies.djangoToFrontend || '',
+        result.latencies.frontendToMQTT
+    ].join(',')).join('\n');
+
+    // Escribir archivo
+    fs.writeFileSync(filename, `${headers}\n${csvContent}`);
+    console.log(`Resultados guardados en: ${filename}`);
+}
+
+// Función para calcular estadísticas
+function calculateStatistics(results) {
+    const metrics = ['totalRTT', 'mqttToWebSocket', 'webSocketProcessing', 'djangoProcessing', 'djangoToFrontend', 'frontendToMQTT'];
+    const stats = {};
+
+    metrics.forEach(metric => {
+        const values = results.map(r => r.latencies[metric]).filter(v => v !== undefined);
+        if (values.length > 0) {
+            // Calcular estadísticas básicas
+            const sum = values.reduce((a, b) => a + b, 0);
+            const mean = sum / values.length;
+            const sortedValues = [...values].sort((a, b) => a - b);
+            const median = sortedValues[Math.floor(values.length / 2)];
+            
+            // Calcular desviación estándar
+            const squareDiffs = values.map(value => Math.pow(value - mean, 2));
+            const avgSquareDiff = squareDiffs.reduce((a, b) => a + b, 0) / values.length;
+            const stdDev = Math.sqrt(avgSquareDiff);
+
+            // Calcular percentiles
+            const p95 = sortedValues[Math.floor(values.length * 0.95)];
+            const p99 = sortedValues[Math.floor(values.length * 0.99)];
+
+            stats[metric] = {
+                min: Math.min(...values),
+                max: Math.max(...values),
+                mean: mean,
+                median: median,
+                stdDev: stdDev,
+                p95: p95,
+                p99: p99
+            };
+        }
+    });
+
+    return stats;
+}
+
+// Función para imprimir estadísticas
+function printStatistics(stats) {
+    console.log('\n=== Estadísticas de Latencia ===');
+    Object.entries(stats).forEach(([metric, values]) => {
+        console.log(`\n${metric}:`);
+        console.log(`  Mínimo: ${values.min.toFixed(2)}ms`);
+        console.log(`  Máximo: ${values.max.toFixed(2)}ms`);
+        console.log(`  Media: ${values.mean.toFixed(2)}ms`);
+        console.log(`  Mediana: ${values.median.toFixed(2)}ms`);
+        console.log(`  Desviación Estándar: ${values.stdDev.toFixed(2)}ms`);
+        console.log(`  Percentil 95: ${values.p95.toFixed(2)}ms`);
+        console.log(`  Percentil 99: ${values.p99.toFixed(2)}ms`);
+    });
+}
 
 // Configuración del cliente MQTT
 const mqttOptions = {
@@ -27,7 +133,24 @@ function generateMessageId() {
 
 // Función para enviar mensaje de latencia
 function sendLatencyMessage(variables) {
-    const messageId = generateMessageId();
+
+    if (messageCount >= TOTAL_MESSAGES) {
+        // Calcular y mostrar estadísticas finales
+        const stats = calculateStatistics(latencyResults.slice(WARMUP_MESSAGES));
+        printStatistics(stats);
+        
+        // Guardar resultados en CSV
+        saveToCSV(latencyResults.slice(WARMUP_MESSAGES), process.env.WS_TYPE || 'unknown');
+        
+        // Terminar el proceso
+        console.log('\nPrueba de latencia completada. Cerrando cliente...');
+        mqttClient.end(false, () => process.exit(0));
+        return;
+    }
+
+    messageCount++;
+
+    const messageId = generateMessageId(); // Generar un ID único para el mensaje
     const T1 = Date.now(); // Timestamp T1: Cuando el cliente MQTT envía el mensaje
 
     const message = {
@@ -48,8 +171,7 @@ function sendLatencyMessage(variables) {
 
     // Publicar mensaje
     mqttClient.publish(process.env.MQTT_TOPIC, JSON.stringify(message));
-    console.log(`Mensaje de latencia enviado - ID: ${messageId}, T1: ${T1}`);
-    console.log('Datos enviados:', variables);
+    console.log(`Mensaje ${messageCount}/${TOTAL_MESSAGES} enviado - ID: ${messageId}, T1: ${T1}`);
 }
 
 
@@ -63,17 +185,26 @@ mqttClient.on('connect', () => {
             console.error('Error al suscribirse al tópico:', err);
         } else {
             console.log(`Suscrito al tópico: ${process.env.MQTT_TOPIC}`);
+            console.log(`\nIniciando prueba de latencia:`);
+            console.log(`- Total de mensajes: ${TOTAL_MESSAGES}`);
+            console.log(`- Mensajes de calentamiento: ${WARMUP_MESSAGES}`);
+            console.log(`- Intervalo entre mensajes: ${INTERVAL_MS}ms\n`);
+
+            // Iniciar envío de mensajes
+            const interval = setInterval(() => {
+                const testData = {
+                    "1": 1,
+                    "2": 0
+                };
+                sendLatencyMessage(testData);
+            }, INTERVAL_MS);
+
+            // Limpiar intervalo cuando se complete
+            if (messageCount >= TOTAL_MESSAGES) {
+                clearInterval(interval);
+            }
         }
     });
-
-    // Ejemplo: enviar un mensaje cada 5 segundos
-    setInterval(() => {
-        const testData = {
-            "1": 1,
-            "2": 0
-        };
-        sendLatencyMessage(testData);
-    }, 5000);
 });
 
 // Manejo de mensajes recibidos
@@ -82,47 +213,42 @@ mqttClient.on('message', (topic, message) => {
         const data = JSON.parse(message.toString());
         
         if (data.messageType === 'latency_response') {
-                // Si recibimos una respuesta a uno de nuestros mensajes
-                if (sentMessages.has(data.originalMessageId)) {
+            if (sentMessages.has(data.originalMessageId)) {
+                const T4 = Date.now();
+                const timestamps = {
+                    ...data.timestamps,
+                    T4: T4
+                };
 
-                    const T4 = Date.now(); // Timestamp T4: Cuando el cliente MQTT recibe la respuesta
-                    const messageInfo = sentMessages.get(data.originalMessageId);
+                // Calcular latencias
+                const latencies = {
+                    totalRTT: T4 - timestamps.T1,
+                    mqttToWebSocket: timestamps.T2 - timestamps.T1,
+                    webSocketProcessing: timestamps.T2_5 ? timestamps.T2_5 - timestamps.T2 : undefined,
+                    djangoProcessing: timestamps.T2_5 ? timestamps.T2_5 - timestamps.T2 : undefined,
+                    djangoToFrontend: timestamps.T2_5 ? timestamps.T3 - timestamps.T2_5 : timestamps.T3 - timestamps.T2,
+                    frontendToMQTT: T4 - timestamps.T3
+                };
 
+                // Guardar resultados
+                latencyResults.push({
+                    messageId: data.originalMessageId,
+                    timestamps: timestamps,
+                    latencies: latencies
+                });
 
-                    // Asegurarnos de que timestamps existe
-                    const timestamps = data.timestamps || {};
-                
-                    console.log(`Timestamps recibidos en respuesta:`, timestamps);  // Debug log
-                    
-                    // Calcular RTT total y parciales
-                    const totalRTT = T4 - timestamps.T1;
-                    const mqttToWebSocket = timestamps.T2 - timestamps.T1;
-                    const webSocketToFrontend = timestamps.T3 - timestamps.T2;
-                    const frontendToMQTT = T4 - timestamps.T3;
-
-                    console.log(`Latencia para mensaje ${data.originalMessageId}:`);
-                    console.log(`T1 (Cliente MQTT envío): ${timestamps.T1}`);
-                    console.log(`T2 (${data.websocketType} recepción): ${timestamps.T2}`);
-                    if (timestamps.T2_5) {
-                        const djangoProcessing = timestamps.T2_5 - timestamps.T2;
-                        const djangoToFrontend = timestamps.T3 - timestamps.T2_5;
-                        console.log(`T2.5 (Django procesamiento): ${timestamps.T2_5}`);
-                        console.log(`Procesamiento en Django: ${djangoProcessing}ms`);
-                        console.log(`Django -> Frontend: ${djangoToFrontend}ms`);
-                    }
-                    console.log(`T3 (Frontend recepción): ${timestamps.T3}`);
-                    console.log(`T4 (Cliente MQTT recepción): ${T4}`);
-                    console.log(`RTT Total: ${totalRTT}ms`);
-                    console.log(`MQTT -> WebSocket: ${mqttToWebSocket}ms`);
-                    console.log(`WebSocket -> Frontend: ${webSocketToFrontend}ms`);
-                    console.log(`Frontend -> MQTT: ${frontendToMQTT}ms`);
-                        
-                    // Limpiar el mensaje del Map
-                    sentMessages.delete(data.originalMessageId);
+                // Imprimir resultados individuales
+                console.log(`\nResultados para mensaje ${messageCount}:`);
+                console.log(`RTT Total: ${latencies.totalRTT}ms`);
+                console.log(`MQTT -> WebSocket: ${latencies.mqttToWebSocket}ms`);
+                if (timestamps.T2_5) {
+                    console.log(`Procesamiento en Django: ${latencies.djangoProcessing}ms`);
+                    console.log(`Django -> Frontend: ${latencies.djangoToFrontend}ms`);
                 }
-        }
-        else {
-            console.log('Mensaje recibido de tipo desconocido:', data);
+                console.log(`Frontend -> MQTT: ${latencies.frontendToMQTT}ms`);
+
+                sentMessages.delete(data.originalMessageId);
+            }
         }
     } catch (error) {
         console.error('Error al procesar mensaje:', error);
