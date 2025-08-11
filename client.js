@@ -27,40 +27,29 @@ function generateMessageId() {
 
 // Función para enviar mensaje de latencia
 function sendLatencyMessage(variables) {
-    
     const messageId = generateMessageId();
+    const T1 = Date.now(); // Timestamp T1: Cuando el cliente MQTT envía el mensaje
+
     const message = {
         messageType: 'latency_request',  // Identificador para mensajes de latencia
         messageId: messageId,            // ID único del mensaje
-        timestamp: Date.now(),           // Timestamp de envío
+        timestamp: T1,                   // Timestamp de envío
+        timestamps: {                    // Objeto para almacenar todos los timestamps
+            T1: T1,
+        },
         data: variables                  // Datos de las variables
     };
 
     // Guardar timestamp de envío
     sentMessages.set(messageId, {
-        sendTime: Date.now(),
+        sendTime: T1,
         responseReceived: false
     });
 
     // Publicar mensaje
     mqttClient.publish(process.env.MQTT_TOPIC, JSON.stringify(message));
-    console.log(`Mensaje de latencia enviado - ID: ${messageId}`);
+    console.log(`Mensaje de latencia enviado - ID: ${messageId}, T1: ${T1}`);
     console.log('Datos enviados:', variables);
-}
-
-
-// Función para enviar respuesta a un mensaje de latencia
-function sendLatencyResponse(originalMessage, websocketType) {
-    const responseMessage = {
-        messageType: 'latency_response',     // Identificador para respuestas
-        originalMessageId: originalMessage.messageId,  // ID del mensaje original
-        timestamp: Date.now(),               // Timestamp de la respuesta
-        data: originalMessage.data,          // Devolver los mismos datos
-        websocketType: websocketType         // Tipo de WebSocket que respondió
-    };
-
-    mqttClient.publish(process.env.MQTT_TOPIC, JSON.stringify(responseMessage));
-    console.log(`Respuesta de latencia enviada para mensaje: ${originalMessage.messageId} desde ${websocketType}`);
 }
 
 
@@ -92,33 +81,48 @@ mqttClient.on('message', (topic, message) => {
     try {
         const data = JSON.parse(message.toString());
         
-        switch(data.messageType) {
-            case 'latency_request':
-                // Si recibimos un mensaje de latencia, enviamos una respuesta
-                // (pero no a nuestros propios mensajes)
-                if (!sentMessages.has(data.messageId)) {
-                    sendLatencyResponse(data);
-                }
-                break;
-
-            case 'latency_response':
+        if (data.messageType === 'latency_response') {
                 // Si recibimos una respuesta a uno de nuestros mensajes
                 if (sentMessages.has(data.originalMessageId)) {
-                    const messageInfo = sentMessages.get(data.originalMessageId);
-                    const receiveTime = Date.now();
-                    const rtt = receiveTime - messageInfo.sendTime;
 
-                    console.log(`RTT completo para mensaje ${data.originalMessageId}: ${rtt}ms`);
-                    console.log(`WebSocket que respondió: ${data.websocketType}`);
-                    console.log('Datos recibidos:', data.data);
+                    const T4 = Date.now(); // Timestamp T4: Cuando el cliente MQTT recibe la respuesta
+                    const messageInfo = sentMessages.get(data.originalMessageId);
+
+
+                    // Asegurarnos de que timestamps existe
+                    const timestamps = data.timestamps || {};
+                
+                    console.log(`Timestamps recibidos en respuesta:`, timestamps);  // Debug log
                     
+                    // Calcular RTT total y parciales
+                    const totalRTT = T4 - timestamps.T1;
+                    const mqttToWebSocket = timestamps.T2 - timestamps.T1;
+                    const webSocketToFrontend = timestamps.T3 - timestamps.T2;
+                    const frontendToMQTT = T4 - timestamps.T3;
+
+                    console.log(`Latencia para mensaje ${data.originalMessageId}:`);
+                    console.log(`T1 (Cliente MQTT envío): ${timestamps.T1}`);
+                    console.log(`T2 (${data.websocketType} recepción): ${timestamps.T2}`);
+                    if (timestamps.T2_5) {
+                        const djangoProcessing = timestamps.T2_5 - timestamps.T2;
+                        const djangoToFrontend = timestamps.T3 - timestamps.T2_5;
+                        console.log(`T2.5 (Django procesamiento): ${timestamps.T2_5}`);
+                        console.log(`Procesamiento en Django: ${djangoProcessing}ms`);
+                        console.log(`Django -> Frontend: ${djangoToFrontend}ms`);
+                    }
+                    console.log(`T3 (Frontend recepción): ${timestamps.T3}`);
+                    console.log(`T4 (Cliente MQTT recepción): ${T4}`);
+                    console.log(`RTT Total: ${totalRTT}ms`);
+                    console.log(`MQTT -> WebSocket: ${mqttToWebSocket}ms`);
+                    console.log(`WebSocket -> Frontend: ${webSocketToFrontend}ms`);
+                    console.log(`Frontend -> MQTT: ${frontendToMQTT}ms`);
+                        
                     // Limpiar el mensaje del Map
                     sentMessages.delete(data.originalMessageId);
                 }
-                break;
-
-            default:
-                console.log('Mensaje recibido de tipo desconocido:', data);
+        }
+        else {
+            console.log('Mensaje recibido de tipo desconocido:', data);
         }
     } catch (error) {
         console.error('Error al procesar mensaje:', error);
