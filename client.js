@@ -7,10 +7,15 @@ import path from 'path';
 dotenv.config();
 
 // Configuración para el análisis de latencia
-const TOTAL_MESSAGES = 100;
+const TOTAL_MESSAGES = 1005;
 const WARMUP_MESSAGES = 5;
-const INTERVAL_MS = 3000;
+const INTERVAL_MS = 2500;
 let messageCount = 0;
+
+
+//Configuración Nivel QoS
+const QOS_LEVEL = process.env.MQTT_QOS ? parseInt(process.env.MQTT_QOS) : 0; //QoS 0 por defecto
+console.log(`Usando QoS nivel: ${QOS_LEVEL}`);
 
 // Estructura para almacenar resultados
 const latencyResults = [];
@@ -169,9 +174,19 @@ function sendLatencyMessage(variables) {
         responseReceived: false
     });
 
-    // Publicar mensaje
-    mqttClient.publish(process.env.MQTT_TOPIC, JSON.stringify(message));
-    console.log(`Mensaje ${messageCount}/${TOTAL_MESSAGES} enviado - ID: ${messageId}, T1: ${T1}`);
+    // Publicar mensaje con QoS configurable
+    mqttClient.publish(
+        process.env.MQTT_TOPIC, 
+        JSON.stringify(message),
+        { qos: QOS_LEVEL },
+        (error) => {
+            if (error) {
+                console.error(`Error al publicar mensaje ${messageId}:`, error);
+            } else {
+                console.log(`Mensaje ${messageCount}/${TOTAL_MESSAGES} enviado - ID: ${messageId}, T1: ${T1}, QoS: ${QOS_LEVEL}`);
+            }
+        }
+    );
 }
 
 
@@ -180,7 +195,7 @@ mqttClient.on('connect', () => {
     console.log('Conectado al broker MQTT');
     
     // Suscribirse al tópico
-    mqttClient.subscribe(process.env.MQTT_TOPIC, (err) => {
+    mqttClient.subscribe(process.env.MQTT_TOPIC, { qos: QOS_LEVEL }, (err) => {
         if (err) {
             console.error('Error al suscribirse al tópico:', err);
         } else {
