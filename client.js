@@ -1,7 +1,6 @@
 import * as mqtt from 'mqtt';
 import dotenv from 'dotenv';
 import fs from 'fs';
-import path from 'path';
 
 // Configurar dotenv para variables de entorno
 dotenv.config();
@@ -10,6 +9,7 @@ dotenv.config();
 const TOTAL_MESSAGES = 1005;
 const WARMUP_MESSAGES = 5;
 const INTERVAL_MS = 2500;
+
 let messageCount = 0;
 
 
@@ -33,12 +33,7 @@ function saveToCSV(results, implementation) {
         'T2_5',
         'T3',
         'T4',
-        'RTT_Total',
-        'MQTT_to_WebSocket',
-        'WebSocket_Processing',
-        'Django_Processing',
-        'Django_to_Frontend',
-        'Frontend_to_MQTT'
+        'RTT_Total'
     ].join(',');
 
     // Crear contenido del CSV
@@ -49,12 +44,7 @@ function saveToCSV(results, implementation) {
         result.timestamps.T2_5 || '',
         result.timestamps.T3,
         result.timestamps.T4,
-        result.latencies.totalRTT,
-        result.latencies.mqttToWebSocket,
-        result.latencies.webSocketProcessing,
-        result.latencies.djangoProcessing || '',
-        result.latencies.djangoToFrontend || '',
-        result.latencies.frontendToMQTT
+        result.latencies.totalRTT
     ].join(',')).join('\n');
 
     // Escribir archivo
@@ -64,7 +54,7 @@ function saveToCSV(results, implementation) {
 
 // Función para calcular estadísticas
 function calculateStatistics(results) {
-    const metrics = ['totalRTT', 'mqttToWebSocket', 'webSocketProcessing', 'djangoProcessing', 'djangoToFrontend', 'frontendToMQTT'];
+    const metrics = ['totalRTT'];
     const stats = {};
 
     metrics.forEach(metric => {
@@ -81,18 +71,12 @@ function calculateStatistics(results) {
             const avgSquareDiff = squareDiffs.reduce((a, b) => a + b, 0) / values.length;
             const stdDev = Math.sqrt(avgSquareDiff);
 
-            // Calcular percentiles
-            const p95 = sortedValues[Math.floor(values.length * 0.95)];
-            const p99 = sortedValues[Math.floor(values.length * 0.99)];
-
             stats[metric] = {
                 min: Math.min(...values),
                 max: Math.max(...values),
                 mean: mean,
                 median: median,
-                stdDev: stdDev,
-                p95: p95,
-                p99: p99
+                stdDev: stdDev
             };
         }
     });
@@ -110,8 +94,6 @@ function printStatistics(stats) {
         console.log(`  Media: ${values.mean.toFixed(2)}ms`);
         console.log(`  Mediana: ${values.median.toFixed(2)}ms`);
         console.log(`  Desviación Estándar: ${values.stdDev.toFixed(2)}ms`);
-        console.log(`  Percentil 95: ${values.p95.toFixed(2)}ms`);
-        console.log(`  Percentil 99: ${values.p99.toFixed(2)}ms`);
     });
 }
 
@@ -208,8 +190,10 @@ mqttClient.on('connect', () => {
             // Iniciar envío de mensajes
             const interval = setInterval(() => {
                 const testData = {
-                    "1": 1,
-                    "2": 0
+                    // 2 Variables con ID's del 1 al 15
+                    // Se asignan valores aleatorios a las variables
+                    [Math.floor(Math.random() * 15) + 1]: Math.round(Math.random()),
+                    [Math.floor(Math.random() * 15) + 1]: Math.round(Math.random())
                 };
                 sendLatencyMessage(testData);
             }, INTERVAL_MS);
@@ -234,15 +218,14 @@ mqttClient.on('message', (topic, message) => {
                     ...data.timestamps,
                     T4: T4
                 };
-
+""
                 // Calcular latencias
                 const latencies = {
                     totalRTT: T4 - timestamps.T1,
-                    mqttToWebSocket: timestamps.T2 - timestamps.T1,
-                    webSocketProcessing: timestamps.T2_5 ? timestamps.T2_5 - timestamps.T2 : undefined,
-                    djangoProcessing: timestamps.T2_5 ? timestamps.T2_5 - timestamps.T2 : undefined,
+                    mqttToBridge: timestamps.T2 - timestamps.T1,
                     djangoToFrontend: timestamps.T2_5 ? timestamps.T3 - timestamps.T2_5 : timestamps.T3 - timestamps.T2,
-                    frontendToMQTT: T4 - timestamps.T3
+                    bridgeToFrontend: timestamps.T3 - timestamps.T2,
+                    frontendToClient: T4 - timestamps.T3
                 };
 
                 // Guardar resultados
@@ -255,12 +238,6 @@ mqttClient.on('message', (topic, message) => {
                 // Imprimir resultados individuales
                 console.log(`\nResultados para mensaje ${messageCount}:`);
                 console.log(`RTT Total: ${latencies.totalRTT}ms`);
-                console.log(`MQTT -> WebSocket: ${latencies.mqttToWebSocket}ms`);
-                if (timestamps.T2_5) {
-                    console.log(`Procesamiento en Django: ${latencies.djangoProcessing}ms`);
-                    console.log(`Django -> Frontend: ${latencies.djangoToFrontend}ms`);
-                }
-                console.log(`Frontend -> MQTT: ${latencies.frontendToMQTT}ms`);
 
                 sentMessages.delete(data.originalMessageId);
             }
